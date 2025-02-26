@@ -56,12 +56,28 @@ class PDFVoiceConverter:
         if torch.cuda.is_available():
             self.tts_model = pipeline("text-to-speech", "microsoft/speecht5_tts")
         
-    def extract_text_from_pdf(self, pdf_file):
+    def get_pdf_pages_count(self, pdf_file):
+        """Get total number of pages in PDF"""
+        with pdfplumber.open(pdf_file) as pdf:
+            return len(pdf.pages)
+
+    def extract_text_from_pdf(self, pdf_file, start_page=None, end_page=None):
+        """Extract text from PDF with page range support"""
         text = ""
         with pdfplumber.open(pdf_file) as pdf:
-            for page in pdf.pages:
-                text += page.extract_text() or ""
-        return text
+            # Adjust page numbers to 0-based index
+            start = (start_page - 1) if start_page else 0
+            end = end_page if end_page else len(pdf.pages)
+            
+            # Ensure page ranges are valid
+            start = max(0, start)
+            end = min(len(pdf.pages), end)
+            
+            # Extract text from selected pages
+            for page_num in range(start, end):
+                page = pdf.pages[page_num]
+                text += (page.extract_text() or "") + "\n"
+        return text.strip()
 
     def translate_text(self, text, target_lang):
         translator = GoogleTranslator(source='auto', target=target_lang)
@@ -120,6 +136,7 @@ def main():
         This app uses advanced AI to convert PDF documents into natural-sounding speech.
         Features:
         - Multiple language support
+        - Page range selection
         - Advanced text processing
         - Neural TTS (when GPU available)
         - Adjustable speech rate
@@ -133,46 +150,73 @@ def main():
     )
 
     if uploaded_file is not None:
-        with st.spinner("Processing PDF..."):
-            # Create progress bar
-            progress_bar = st.progress(0)
-            
-            # Extract text
-            text = converter.extract_text_from_pdf(uploaded_file)
-            progress_bar.progress(33)
-            
-            # Translate if needed
-            if target_language != "English":
-                text = converter.translate_text(
+        # Get total pages
+        total_pages = converter.get_pdf_pages_count(uploaded_file)
+        st.info(f"PDF has {total_pages} pages")
+
+        # Page range selection
+        col1, col2 = st.columns(2)
+        with col1:
+            start_page = st.number_input(
+                "Start Page",
+                min_value=1,
+                max_value=total_pages,
+                value=1
+            )
+        with col2:
+            end_page = st.number_input(
+                "End Page",
+                min_value=start_page,
+                max_value=total_pages,
+                value=min(start_page + 4, total_pages)
+            )
+
+        # Process button
+        if st.button("Convert to Speech"):
+            with st.spinner(f"Processing pages {start_page} to {end_page}..."):
+                # Create progress bar
+                progress_bar = st.progress(0)
+                
+                # Extract text with page range
+                text = converter.extract_text_from_pdf(
+                    uploaded_file,
+                    start_page,
+                    end_page
+                )
+                progress_bar.progress(33)
+                
+                # Translate if needed
+                if target_language != "English":
+                    text = converter.translate_text(
+                        text,
+                        converter.supported_languages[target_language]
+                    )
+                progress_bar.progress(66)
+                
+                # Convert to speech
+                audio_bytes = converter.convert_to_speech(
                     text,
                     converter.supported_languages[target_language]
                 )
-            progress_bar.progress(66)
-            
-            # Convert to speech
-            audio_bytes = converter.convert_to_speech(
-                text,
-                converter.supported_languages[target_language]
-            )
-            progress_bar.progress(100)
-            
-            if audio_bytes:
-                st.success("Conversion completed successfully!")
+                progress_bar.progress(100)
                 
-                # Display text content
-                with st.expander("Show extracted text"):
-                    st.markdown(text)
-                
-                # Audio player
-                st.audio(audio_bytes, format='audio/mp3')
-                
-                # Download button
-                st.download_button(
-                    label="Download Audio",
-                    data=audio_bytes,
-                    file_name="pdf_audio.mp3",
-                    mime="audio/mp3"
-                )
+                if audio_bytes:
+                    st.success("Conversion completed successfully!")
+                    
+                    # Display text content
+                    with st.expander("Show extracted text"):
+                        st.markdown(text)
+                    
+                    # Audio player
+                    st.audio(audio_bytes, format='audio/mp3')
+                    
+                    # Download button with page range in filename
+                    st.download_button(
+                        label="Download Audio",
+                        data=audio_bytes,
+                        file_name=f"pdf_audio_pages_{start_page}-{end_page}.mp3",
+                        mime="audio/mp3"
+                    )
 
 if __name__ == "__main__":
     main()
